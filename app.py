@@ -190,7 +190,7 @@ if uploaded_file:
         # Analisi chiamate "Answered" ma senza conversazione
         answered_no_talk = df[(df['Status_clean'] == 'answered') & (df['Talking_sec'] == 0)]
         st.write(f"🔍 **Chiamate 'Answered' ma senza conversazione**: {len(answered_no_talk)} ({len(answered_no_talk)/len(df)*100:.1f}%)")
-        st.write("*Queste sono probabilmente chiamate abbandonate dopo essere state prese dal sistema*")
+        st.write("*Queste sono chiamate che il sistema ha risposto ma senza tempo di conversazione - probabilmente abbandonate dal chiamante*")
         
         # Distribuzione durate per chiamate "answered"
         answered_calls = df[df['Status_clean'] == 'answered']
@@ -206,16 +206,16 @@ if uploaded_file:
         
         total_calls = len(df)
         answered_calls = (df['Status_clean'] == 'answered').sum()
-        real_conversations = (df['Has_Talking_Time']).sum()
+        real_conversations = (df['Real_Conversation']).sum()
         likely_abandoned = df['Likely_Abandoned'].sum()
-        likely_voicemail = df['Likely_Voicemail'].sum()
+        other_status = len(df[df['Status_clean'] != 'answered'])
         transferred_calls = df['Is_Transferred'].sum()
         
         col1.metric("Totale Chiamate", total_calls)
         col2.metric("Status 'Answered'", answered_calls)
         col3.metric("Conversazioni Reali", real_conversations)
-        col4.metric("Probabilmente Abbandonate", likely_abandoned)
-        col5.metric("Probabilmente Voicemail", likely_voicemail)
+        col4.metric("Abbandonate (0 sec talking)", likely_abandoned)
+        col5.metric("Altri Status", other_status)
         col6.metric("Trasferite", transferred_calls)
         
         # BREAKDOWN DETTAGLIATO
@@ -223,18 +223,16 @@ if uploaded_file:
         
         breakdown_data = {
             'Categoria': [
-                'Conversazioni reali (con talking time)',
-                'Answered ma senza conversazione (abbandonate)',
-                'Voicemail/Brevi interazioni (<60s)',
-                'Chiamate in coda/sistema',
-                'Altri status'
+                'Conversazioni reali (con talking time > 0)',
+                'Status Answered ma senza conversazione (0 sec talking)',
+                'Altri status (non Answered)',
+                'Totale chiamate sistema'
             ],
             'Conteggio': [
-                len(df[(df['Status_clean'] == 'answered') & (df['Talking_sec'] > 60)]),
+                len(df[(df['Status_clean'] == 'answered') & (df['Talking_sec'] > 0)]),
                 len(df[(df['Status_clean'] == 'answered') & (df['Talking_sec'] == 0)]),
-                len(df[(df['Status_clean'] == 'answered') & (df['Talking_sec'] > 0) & (df['Talking_sec'] <= 60)]),
-                len(df[(df['Status_clean'] == 'answered') & (df['Ringing_sec'] == 0) & (df['Talking_sec'] > 0)]),
-                len(df[df['Status_clean'] != 'answered'])
+                len(df[df['Status_clean'] != 'answered']),
+                len(df)
             ]
         }
         
