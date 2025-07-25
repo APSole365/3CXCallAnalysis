@@ -1,11 +1,12 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import time
 
 st.set_page_config(page_title="3CX Call Analyzer Pro", layout="wide")
-st.title("📞 3CX Call Log Analyzer – Versione Aggiornata 2025")
+st.title("📞 3CX Call Log Analyzer – Analisi Avanzata 2025")
 
 uploaded_file = st.file_uploader("Carica un file CSV di log chiamate 3CX", type=["csv"])
 
@@ -85,11 +86,16 @@ def load_and_process_data(file):
     with st.spinner("⏳ Elaborazione colonne Ringing e Talking..."):
         df['Ringing_sec'] = df['Ringing'].fillna("00:00:00").apply(duration_to_seconds)
         df['Talking_sec'] = df['Talking'].fillna("00:00:00").apply(duration_to_seconds)
+        df['Total_Duration_sec'] = df['Ringing_sec'] + df['Talking_sec']
         df['Start'] = df['Call Time']
-        df['End'] = df['Start'] + pd.to_timedelta(df['Ringing_sec'] + df['Talking_sec'], unit='s')
+        df['End'] = df['Start'] + pd.to_timedelta(df['Total_Duration_sec'], unit='s')
 
+    # Analisi temporale
     df['Hour'] = df['Call Time'].dt.hour
     df['Date'] = df['Call Time'].dt.date
+    df['DayOfWeek'] = df['Call Time'].dt.day_name()
+    df['Week'] = df['Call Time'].dt.isocalendar().week
+    df['Month'] = df['Call Time'].dt.month
     
     # Adatta alle nuove colonne: usa 'From' invece di 'Caller ID'
     try:
@@ -108,18 +114,38 @@ def load_and_process_data(file):
         df['Destination'] = df['To'].fillna("Unknown")
         df['Destination_Number'] = "Unknown"
 
-    df['Status_clean'] = df['Status'].str.lower()
+    # Analisi avanzata degli status
+    df['Status_clean'] = df['Status'].str.lower().str.strip()
     
-    # Gestione del campo Direction per identificare trasferimenti
+    # Categorizzazione più dettagliata
     df['Is_Internal'] = df['Direction'].str.lower() == 'internal'
     df['Is_Inbound'] = df['Direction'].str.lower() == 'inbound' 
     df['Is_Outbound'] = df['Direction'].str.lower() == 'outbound'
     
+    # Analisi dettagliata dello status
+    df['Is_Answered'] = df['Status_clean'].isin(['answered', 'connected'])
+    df['Is_Missed'] = df['Status_clean'].isin(['missed', 'unanswered', 'no answer'])
+    df['Is_Busy'] = df['Status_clean'].isin(['busy', 'user busy'])
+    df['Is_Failed'] = df['Status_clean'].isin(['failed', 'error', 'rejected'])
+    df['Is_Abandoned'] = df['Status_clean'].isin(['abandoned', 'caller hangup'])
+    
+    # Analisi durata per categorizzare meglio
+    df['Has_Talking_Time'] = df['Talking_sec'] > 0
+    df['Has_Only_Ringing'] = (df['Ringing_sec'] > 0) & (df['Talking_sec'] == 0)
+    df['No_Duration'] = (df['Ringing_sec'] == 0) & (df['Talking_sec'] == 0)
+    
+    # Categorizzazione intelligente delle chiamate "non risposte"
+    df['Likely_Abandoned'] = (df['Status_clean'] == 'answered') & (df['Talking_sec'] == 0) & (df['Ringing_sec'] > 0)
+    df['Likely_Voicemail'] = (df['Status_clean'] == 'answered') & (df['Talking_sec'] > 0) & (df['Talking_sec'] < 60)
+    df['Likely_Queue_Dropped'] = (df['Status_clean'] == 'answered') & (df['Talking_sec'] > 0) & (df['Ringing_sec'] == 0)
+    
     # Considera come trasferiti quelli con activity details che contengono "transfer" o "forward"
     if 'Call Activity Details' in df.columns:
         df['Is_Transferred'] = df['Call Activity Details'].str.lower().str.contains("transfer|forward", na=False)
+        df['Ended_By_Caller'] = df['Call Activity Details'].str.lower().str.contains("ended by.*\(", na=False)
     else:
         df['Is_Transferred'] = False
+        df['Ended_By_Caller'] = False
 
     return df
 
@@ -148,43 +174,158 @@ if uploaded_file:
     try:
         df = load_and_process_data(uploaded_file)
         
-        st.subheader("📈 Statistiche Generali")
-        col1, col2, col3, col4, col5 = st.columns(5)
+        # ANALISI AVANZATA DEGLI STATUS
+        st.subheader("🔍 Analisi Dettagliata degli Status")
+        
+        # Mostra tutti gli status unici trovati nel dataset
+        unique_statuses = df['Status'].value_counts()
+        st.write("**Status trovati nel dataset:**")
+        status_df = pd.DataFrame({
+            'Status': unique_statuses.index,
+            'Conteggio': unique_statuses.values,
+            'Percentuale': (unique_statuses.values / len(df) * 100).round(2)
+        })
+        st.dataframe(status_df)
+        
+        # Analisi chiamate "Answered" ma senza conversazione
+        answered_no_talk = df[(df['Status_clean'] == 'answered') & (df['Talking_sec'] == 0)]
+        st.write(f"🔍 **Chiamate 'Answered' ma senza conversazione**: {len(answered_no_talk)} ({len(answered_no_talk)/len(df)*100:.1f}%)")
+        st.write("*Queste sono probabilmente chiamate abbandonate dopo essere state prese dal sistema*")
+        
+        # Distribuzione durate per chiamate "answered"
+        answered_calls = df[df['Status_clean'] == 'answered']
+        if len(answered_calls) > 0:
+            fig_duration = px.histogram(answered_calls, x='Talking_sec', 
+                                      title='Distribuzione durata conversazioni (chiamate Answered)',
+                                      nbins=50, 
+                                      labels={'Talking_sec': 'Durata conversazione (secondi)', 'count': 'Numero chiamate'})
+            st.plotly_chart(fig_duration, use_container_width=True)
+        
+        st.subheader("📈 Statistiche Generali Avanzate")
+        col1, col2, col3, col4, col5, col6 = st.columns(6)
         
         total_calls = len(df)
         answered_calls = (df['Status_clean'] == 'answered').sum()
-        missed_calls = (df['Status_clean'] == 'missed').sum()
-        internal_calls = df['Is_Internal'].sum()
+        real_conversations = (df['Has_Talking_Time']).sum()
+        likely_abandoned = df['Likely_Abandoned'].sum()
+        likely_voicemail = df['Likely_Voicemail'].sum()
         transferred_calls = df['Is_Transferred'].sum()
         
         col1.metric("Totale Chiamate", total_calls)
-        col2.metric("Chiamate Risposte", answered_calls)
-        col3.metric("Chiamate Perse", missed_calls)
-        col4.metric("Chiamate Interne", internal_calls)
-        col5.metric("Chiamate Trasferite", transferred_calls)
+        col2.metric("Status 'Answered'", answered_calls)
+        col3.metric("Conversazioni Reali", real_conversations)
+        col4.metric("Probabilmente Abbandonate", likely_abandoned)
+        col5.metric("Probabilmente Voicemail", likely_voicemail)
+        col6.metric("Trasferite", transferred_calls)
+        
+        # BREAKDOWN DETTAGLIATO
+        st.subheader("📊 Breakdown Dettagliato delle 8,214 chiamate")
+        
+        breakdown_data = {
+            'Categoria': [
+                'Conversazioni reali (con talking time)',
+                'Answered ma senza conversazione (abbandonate)',
+                'Voicemail/Brevi interazioni (<60s)',
+                'Chiamate in coda/sistema',
+                'Altri status'
+            ],
+            'Conteggio': [
+                len(df[(df['Status_clean'] == 'answered') & (df['Talking_sec'] > 60)]),
+                len(df[(df['Status_clean'] == 'answered') & (df['Talking_sec'] == 0)]),
+                len(df[(df['Status_clean'] == 'answered') & (df['Talking_sec'] > 0) & (df['Talking_sec'] <= 60)]),
+                len(df[(df['Status_clean'] == 'answered') & (df['Ringing_sec'] == 0) & (df['Talking_sec'] > 0)]),
+                len(df[df['Status_clean'] != 'answered'])
+            ]
+        }
+        
+        breakdown_df = pd.DataFrame(breakdown_data)
+        breakdown_df['Percentuale'] = (breakdown_df['Conteggio'] / total_calls * 100).round(1)
+        
+        st.dataframe(breakdown_df)
+        
+        # Grafico a torta del breakdown
+        fig_pie = px.pie(breakdown_df, values='Conteggio', names='Categoria', 
+                        title='Distribuzione dettagliata delle chiamate')
+        st.plotly_chart(fig_pie, use_container_width=True)
 
-        # Statistiche aggiuntive
+        # ANALISI PER DIREZIONE
         st.subheader("📊 Analisi per Direzione")
+        direction_stats = df.groupby('Direction').agg({
+            'Call ID': 'count',
+            'Has_Talking_Time': 'sum',
+            'Talking_sec': 'mean',
+            'Ringing_sec': 'mean'
+        }).round(2)
+        direction_stats.columns = ['Totale', 'Con_Conversazione', 'Durata_Media_Talking', 'Durata_Media_Ringing']
+        direction_stats['Tasso_Conversazione_%'] = (direction_stats['Con_Conversazione'] / direction_stats['Totale'] * 100).round(1)
+        st.dataframe(direction_stats)
+
+        # Distribuzione per direzione
         direction_counts = df['Direction'].value_counts()
         fig_direction = px.pie(values=direction_counts.values, names=direction_counts.index, 
                               title="Distribuzione per tipo di chiamata")
         st.plotly_chart(fig_direction, use_container_width=True)
 
+        # ANALISI TEMPORALE AVANZATA
+        st.subheader("📅 Analisi Temporale Avanzata")
+        
+        # Filtri temporali
+        col1, col2 = st.columns(2)
+        with col1:
+            date_range = st.date_input("Seleziona periodo", 
+                                     value=[df['Date'].min(), df['Date'].max()],
+                                     min_value=df['Date'].min(),
+                                     max_value=df['Date'].max())
+        with col2:
+            selected_directions = st.multiselect("Filtra per direzione", 
+                                                options=df['Direction'].unique(),
+                                                default=df['Direction'].unique())
+        
+        # Applica filtri
+        if len(date_range) == 2:
+            mask = (df['Date'] >= date_range[0]) & (df['Date'] <= date_range[1])
+            filtered_df = df[mask]
+        else:
+            filtered_df = df.copy()
+            
+        filtered_df = filtered_df[filtered_df['Direction'].isin(selected_directions)]
+
         st.subheader("👥 Analisi per Utente")
         unique_users = sorted(df['User'].unique())
         selected_users = st.multiselect("Filtra per utente (From)", options=unique_users, default=None)
-        user_df = df[df['User'].isin(selected_users)] if selected_users else df
+        if selected_users:
+            filtered_df = filtered_df[filtered_df['User'].isin(selected_users)]
 
         st.subheader("🕐 Analisi per Fascia Oraria")
         hour_range = st.slider("Seleziona fascia oraria", 0, 23, (0, 23))
-        filtered_df = user_df[(user_df['Hour'] >= hour_range[0]) & (user_df['Hour'] <= hour_range[1])]
+        filtered_df = filtered_df[(filtered_df['Hour'] >= hour_range[0]) & (filtered_df['Hour'] <= hour_range[1])]
 
         if filtered_df.empty:
-            st.warning("⚠️ Nessuna chiamata trovata nella fascia oraria selezionata.")
+            st.warning("⚠️ Nessuna chiamata trovata con i filtri selezionati.")
         else:
             # Metriche per i dati filtrati
             st.write(f"**Chiamate nella selezione**: {len(filtered_df)}")
             
+            # Analisi pattern giornalieri
+            daily_stats = filtered_df.groupby('DayOfWeek').agg({
+                'Call ID': 'count',
+                'Has_Talking_Time': 'sum',
+                'Talking_sec': 'mean'
+            }).round(2)
+            daily_stats.columns = ['Totale_Chiamate', 'Conversazioni', 'Durata_Media']
+            
+            # Riordina i giorni della settimana
+            day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+            daily_stats = daily_stats.reindex([d for d in day_order if d in daily_stats.index])
+            
+            st.subheader("📊 Pattern Settimanali")
+            st.dataframe(daily_stats)
+            
+            fig_weekly = px.bar(daily_stats.reset_index(), x='DayOfWeek', y='Totale_Chiamate',
+                              title='Chiamate per giorno della settimana')
+            st.plotly_chart(fig_weekly, use_container_width=True)
+            
+            # Concorrenza
             concurrency_df = calculate_concurrency(filtered_df)
             
             if not concurrency_df.empty:
@@ -200,71 +341,122 @@ if uploaded_file:
                 st.plotly_chart(fig, use_container_width=True)
 
             st.subheader("📊 Chiamate per Ora del Giorno")
-            hourly_counts = filtered_df.groupby('Hour').size()
-            fig2 = px.bar(hourly_counts, x=hourly_counts.index, y=hourly_counts.values,
-                         labels={'x': 'Ora del giorno', 'y': 'Numero chiamate'},
+            hourly_stats = filtered_df.groupby('Hour').agg({
+                'Call ID': 'count',
+                'Has_Talking_Time': 'sum',
+                'Talking_sec': 'mean'
+            }).round(2)
+            
+            fig2 = px.bar(hourly_stats.reset_index(), x='Hour', y='Call ID',
+                         labels={'Hour': 'Ora del giorno', 'Call ID': 'Numero chiamate'},
                          title='Distribuzione chiamate per ora')
             st.plotly_chart(fig2, use_container_width=True)
 
-            # Analisi durata chiamate
-            st.subheader("⏱️ Analisi Durata Chiamate")
-            avg_talking = filtered_df['Talking_sec'].mean()
-            avg_ringing = filtered_df['Ringing_sec'].mean()
+            # Analisi durata chiamate dettagliata
+            st.subheader("⏱️ Analisi Durata Chiamate Dettagliata")
             
-            col1, col2 = st.columns(2)
-            col1.metric("Durata media conversazione", f"{avg_talking:.0f} sec")
-            col2.metric("Tempo medio di risposta", f"{avg_ringing:.0f} sec")
+            conversations_only = filtered_df[filtered_df['Has_Talking_Time']]
+            if len(conversations_only) > 0:
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Conversazioni totali", len(conversations_only))
+                col2.metric("Durata media", f"{conversations_only['Talking_sec'].mean():.0f} sec")
+                col3.metric("Durata mediana", f"{conversations_only['Talking_sec'].median():.0f} sec")
+                col4.metric("Durata massima", f"{conversations_only['Talking_sec'].max():.0f} sec")
+                
+                # Distribuzione durate
+                fig_talk_dist = px.histogram(conversations_only, x='Talking_sec',
+                                           title='Distribuzione durata conversazioni',
+                                           nbins=30,
+                                           labels={'Talking_sec': 'Durata (secondi)'})
+                st.plotly_chart(fig_talk_dist, use_container_width=True)
 
-            # Top utenti per numero di chiamate
-            st.subheader("🏆 Top Utenti per Chiamate")
-            user_stats = filtered_df.groupby('User').agg({
+            # Top utenti DETTAGLIATO
+            st.subheader("🏆 Top Utenti - Analisi Dettagliata")
+            user_detailed_stats = filtered_df.groupby('User').agg({
                 'Call ID': 'count',
-                'Talking_sec': 'mean',
-                'Status_clean': lambda x: (x == 'answered').sum()
+                'Has_Talking_Time': 'sum',
+                'Talking_sec': ['mean', 'sum'],
+                'Ringing_sec': 'mean',
+                'Is_Internal': 'sum',
+                'Is_Inbound': 'sum',
+                'Is_Outbound': 'sum'
             }).round(2)
-            user_stats.columns = ['Num_Chiamate', 'Durata_Media_Sec', 'Chiamate_Risposte']
-            user_stats = user_stats.sort_values('Num_Chiamate', ascending=False).head(10)
-            st.dataframe(user_stats)
+            
+            # Flatten column names
+            user_detailed_stats.columns = [
+                'Totale_Chiamate', 'Conversazioni_Reali', 'Durata_Media_Sec', 'Durata_Totale_Sec', 
+                'Tempo_Risposta_Medio', 'Chiamate_Interne', 'Chiamate_In_Entrata', 'Chiamate_In_Uscita'
+            ]
+            
+            user_detailed_stats['Tasso_Risposta_%'] = (
+                user_detailed_stats['Conversazioni_Reali'] / user_detailed_stats['Totale_Chiamate'] * 100
+            ).round(1)
+            
+            user_detailed_stats['Durata_Totale_Min'] = (user_detailed_stats['Durata_Totale_Sec'] / 60).round(1)
+            
+            user_detailed_stats = user_detailed_stats.sort_values('Totale_Chiamate', ascending=False).head(15)
+            st.dataframe(user_detailed_stats)
+
+            # CALL ACTIVITY DETAILS ANALYSIS
+            if 'Call Activity Details' in df.columns:
+                st.subheader("📝 Analisi Call Activity Details")
+                activity_analysis = df['Call Activity Details'].value_counts().head(10)
+                st.write("**Top 10 Activity Details:**")
+                st.dataframe(activity_analysis)
 
             st.subheader("📋 Dati filtrati")
             with st.expander("Mostra tabella dettagliata"):
-                # Mostra le colonne più rilevanti
-                display_columns = ['Call Time', 'From', 'To', 'Direction', 'Status', 'Ringing', 'Talking']
+                display_columns = ['Call Time', 'From', 'To', 'Direction', 'Status', 'Ringing', 'Talking', 'Has_Talking_Time']
                 if 'Call Activity Details' in filtered_df.columns:
                     display_columns.append('Call Activity Details')
                 
                 st.dataframe(filtered_df[display_columns])
 
             st.subheader("⬇️ Esporta i dati")
-            csv_export = filtered_df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="Scarica CSV filtrato",
-                data=csv_export,
-                file_name=f"3cx_analisi_filtrati_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                mime="text/csv"
-            )
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                csv_export = filtered_df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="📄 Scarica CSV filtrato",
+                    data=csv_export,
+                    file_name=f"3cx_analisi_filtrati_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                    mime="text/csv"
+                )
+            
+            with col2:
+                # Export del breakdown dettagliato
+                breakdown_export = breakdown_df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="📊 Scarica Breakdown Dettagliato",
+                    data=breakdown_export,
+                    file_name=f"3cx_breakdown_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                    mime="text/csv"
+                )
             
     except Exception as e:
         st.error(f"❌ Errore durante l'elaborazione del file: {str(e)}")
-        st.write("**Dettagli errore per debug:**")
-        st.code(str(e))
+        import traceback
+        st.code(traceback.format_exc())
         st.write("**Suggerimenti per risolvere il problema:**")
         st.write("1. Verifica che il file CSV sia correttamente formattato")
         st.write("2. Controlla che la colonna 'Call Time' contenga date valide")
         st.write("3. Assicurati che il file non sia danneggiato")
 
 else:
-    st.info("📁 Carica un file CSV per iniziare l'analisi.")
-    st.write("**Formato CSV supportato (nuovo formato 3CX 2025):**")
-    st.write("- **Call Time**: data e ora della chiamata (formato ISO: 2025-07-25T11:41:48)")
-    st.write("- **From**: utente che effettua la chiamata")
-    st.write("- **To**: destinatario della chiamata") 
-    st.write("- **Direction**: direzione (Internal, Inbound, Outbound)")
-    st.write("- **Status**: stato della chiamata (Answered, Missed, etc.)")
-    st.write("- **Ringing** e **Talking**: durata in formato HH:MM:SS")
+    st.info("📁 Carica un file CSV per iniziare l'analisi avanzata.")
+    st.write("**🚀 Nuove funzionalità di analisi avanzata:**")
+    st.write("✅ **Breakdown dettagliato**: Capisce esattamente che tipo sono le tue 8,214 chiamate")
+    st.write("✅ **Analisi status intelligente**: Distingue tra conversazioni reali, abbandonate, voicemail")
+    st.write("✅ **Pattern temporali**: Analisi per giorno della settimana e trend orari")
+    st.write("✅ **Metriche utente dettagliate**: Tasso di risposta, tempo totale conversazione, distribuzione chiamate")
+    st.write("✅ **Analisi Call Activity Details**: Capisce cosa succede veramente alle chiamate")
+    st.write("✅ **Filtri avanzati**: Per periodo, direzione, utente, fascia oraria")
+    st.write("✅ **Export multipli**: Dati filtrati + breakdown dettagliato")
     
-    st.write("**Nuove funzionalità:**")
-    st.write("✅ Supporto per il nuovo formato CSV di 3CX 2025")
-    st.write("✅ Analisi per direzione chiamata (Interna/In entrata/In uscita)")
-    st.write("✅ Statistiche utenti con durata media e chiamate risposte")
-    st.write("✅ Gestione automatica formato data ISO")
+    st.write("**📋 Formato CSV supportato:**")
+    st.write("- **Call Time**: 2025-07-25T11:41:48")
+    st.write("- **From/To**: Utenti con formato 'Nome (Numero)'") 
+    st.write("- **Direction**: Internal/Inbound/Outbound")
+    st.write("- **Status**: Answered/Missed/etc.")
+    st.write("- **Call Activity Details**: Dettagli su come è finita la chiamata")
