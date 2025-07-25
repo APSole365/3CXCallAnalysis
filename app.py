@@ -187,6 +187,59 @@ if uploaded_file:
         })
         st.dataframe(status_df)
         
+        # ANALISI APPROFONDITA DEI NON-ANSWERED
+        non_answered = df[df['Status_clean'] != 'answered']
+        if len(non_answered) > 0:
+            st.subheader("🔍 APPROFONDIMENTO: Chiamate NON-Answered")
+            st.write(f"**Totale chiamate non-answered: {len(non_answered)} ({len(non_answered)/len(df)*100:.1f}%)**")
+            
+            # Status dettagliato per i non-answered
+            non_answered_status = non_answered['Status'].value_counts()
+            st.write("**Breakdown dettagliato degli status non-answered:**")
+            non_answered_df = pd.DataFrame({
+                'Status': non_answered_status.index,
+                'Conteggio': non_answered_status.values,
+                'Percentuale_del_Totale': (non_answered_status.values / len(df) * 100).round(2),
+                'Percentuale_dei_NonAnswered': (non_answered_status.values / len(non_answered) * 100).round(2)
+            })
+            st.dataframe(non_answered_df)
+            
+            # Grafico a barre per i non-answered
+            if len(non_answered_status) > 0:
+                fig_non_answered = px.bar(non_answered_df, x='Status', y='Conteggio',
+                                        title='Distribuzione degli status non-answered',
+                                        labels={'Status': 'Tipo di Status', 'Conteggio': 'Numero chiamate'})
+                fig_non_answered.update_xaxes(tickangle=45)
+                st.plotly_chart(fig_non_answered, use_container_width=True)
+            
+            # Analisi durate per i non-answered
+            st.write("**Analisi durate per chiamate non-answered:**")
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Con tempo di squillo", (non_answered['Ringing_sec'] > 0).sum())
+            col2.metric("Con tempo di conversazione", (non_answered['Talking_sec'] > 0).sum())
+            col3.metric("Senza durata", ((non_answered['Ringing_sec'] == 0) & (non_answered['Talking_sec'] == 0)).sum())
+            
+            # Analisi per direzione dei non-answered
+            non_answered_by_direction = non_answered.groupby(['Direction', 'Status']).size().reset_index(name='Count')
+            if len(non_answered_by_direction) > 0:
+                fig_direction_status = px.bar(non_answered_by_direction, x='Direction', y='Count', color='Status',
+                                            title='Chiamate non-answered per direzione e status',
+                                            barmode='stack')
+                st.plotly_chart(fig_direction_status, use_container_width=True)
+            
+            # Campione di chiamate non-answered per analisi manuale
+            st.write("**Campione di chiamate non-answered (prime 10 per ogni status):**")
+            sample_non_answered = pd.DataFrame()
+            for status in non_answered['Status'].unique()[:5]:  # Prime 5 tipologie
+                status_sample = non_answered[non_answered['Status'] == status].head(10)
+                sample_non_answered = pd.concat([sample_non_answered, status_sample])
+            
+            if not sample_non_answered.empty:
+                display_cols = ['Call Time', 'From', 'To', 'Direction', 'Status', 'Ringing', 'Talking']
+                if 'Call Activity Details' in sample_non_answered.columns:
+                    display_cols.append('Call Activity Details')
+                st.dataframe(sample_non_answered[display_cols])
+        
         # Analisi chiamate "Answered" ma senza conversazione
         answered_no_talk = df[(df['Status_clean'] == 'answered') & (df['Talking_sec'] == 0)]
         st.write(f"🔍 **Chiamate 'Answered' ma senza conversazione**: {len(answered_no_talk)} ({len(answered_no_talk)/len(df)*100:.1f}%)")
