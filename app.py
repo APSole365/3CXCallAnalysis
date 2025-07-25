@@ -187,6 +187,37 @@ if uploaded_file:
         })
         st.dataframe(status_df)
         
+        # DEBUG: Mostra le prime righe con status non-answered
+        st.subheader("🐛 DEBUG: Analisi Status Non-Answered")
+        non_answered_debug = df[df['Status_clean'] != 'answered']
+        st.write(f"**Trovate {len(non_answered_debug)} chiamate con status non-answered**")
+        
+        if len(non_answered_debug) > 0:
+            st.write("**Primi 10 esempi di chiamate non-answered:**")
+            debug_cols = ['Call Time', 'From', 'To', 'Direction', 'Status', 'Status_clean', 'Ringing', 'Talking']
+            if 'Call Activity Details' in non_answered_debug.columns:
+                debug_cols.append('Call Activity Details')
+            st.dataframe(non_answered_debug[debug_cols].head(10))
+            
+            # Mostra i valori unici degli status
+            st.write("**Status originali unici (non-answered):**")
+            unique_non_answered = non_answered_debug['Status'].value_counts()
+            st.write(unique_non_answered)
+            
+            st.write("**Status_clean unici (non-answered):**")
+            unique_clean_non_answered = non_answered_debug['Status_clean'].value_counts()
+            st.write(unique_clean_non_answered)
+            
+            # Verifica se ci sono valori null
+            st.write("**Verifica valori null negli status:**")
+            st.write(f"Status null: {non_answered_debug['Status'].isnull().sum()}")
+            st.write(f"Status vuoti: {(non_answered_debug['Status'] == '').sum()}")
+        else:
+            st.write("⚠️ Strano: il conteggio dice 2348 ma il filtro non trova niente!")
+            st.write("Verifichiamo la colonna Status...")
+            st.write("**Tutti gli status nel dataset:**")
+            st.write(df['Status'].value_counts(dropna=False))
+        
         # ANALISI APPROFONDITA DEI NON-ANSWERED
         non_answered = df[df['Status_clean'] != 'answered']
         if len(non_answered) > 0:
