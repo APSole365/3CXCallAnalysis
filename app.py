@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 import time
 
 st.set_page_config(page_title="3CX Call Analyzer Pro", layout="wide")
-st.title("📞 3CX Call Log Analyzer – Versione Avanzata")
+st.title("📞 3CX Call Log Analyzer – Versione Aggiornata 2025")
 
 uploaded_file = st.file_uploader("Carica un file CSV di log chiamate 3CX", type=["csv"])
 
@@ -13,13 +13,16 @@ uploaded_file = st.file_uploader("Carica un file CSV di log chiamate 3CX", type=
 def load_and_process_data(file):
     df = pd.read_csv(file)
     
-    # Debug: mostra i primi valori della colonna Call Time
-    st.write("🔍 **Debug - Primi 5 valori di Call Time:**")
-    st.write(df['Call Time'].head())
-    st.write(f"**Tipo di dato:** {df['Call Time'].dtype}")
+    # Debug: mostra informazioni sul file caricato
+    st.write("🔍 **Debug - Informazioni file CSV:**")
+    st.write(f"**Colonne disponibili:** {list(df.columns)}")
+    st.write(f"**Numero di righe:** {len(df)}")
+    st.write("**Primi 3 valori di Call Time:**")
+    st.write(df['Call Time'].head(3).tolist())
     
-    # Prova diversi formati di data comuni
+    # Prova diversi formati di data comuni, incluso il formato ISO
     date_formats = [
+        '%Y-%m-%dT%H:%M:%S',    # 2025-07-25T11:41:48 (formato ISO)
         '%Y-%m-%d %H:%M:%S',    # 2024-01-15 14:30:25
         '%d/%m/%Y %H:%M:%S',    # 15/01/2024 14:30:25
         '%m/%d/%Y %H:%M:%S',    # 01/15/2024 14:30:25
@@ -28,10 +31,6 @@ def load_and_process_data(file):
         '%d.%m.%Y %H:%M:%S',    # 15.01.2024 14:30:25
         '%Y-%m-%d %H:%M',       # 2024-01-15 14:30
         '%d/%m/%Y %H:%M',       # 15/01/2024 14:30
-        '%m/%d/%Y %H:%M',       # 01/15/2024 14:30
-        '%d-%m-%Y %H:%M',       # 15-01-2024 14:30
-        '%Y/%m/%d %H:%M',       # 2024/01/15 14:30
-        '%d.%m.%Y %H:%M',       # 15.01.2024 14:30
     ]
     
     # Tenta di convertire la data con diversi formati
@@ -92,18 +91,34 @@ def load_and_process_data(file):
     df['Hour'] = df['Call Time'].dt.hour
     df['Date'] = df['Call Time'].dt.date
     
-    # Gestione più robusta dell'estrazione dell'utente
+    # Adatta alle nuove colonne: usa 'From' invece di 'Caller ID'
     try:
-        df['User'] = df['Caller ID'].str.extract(r'\((.*?)\)')[0].fillna("Unknown")
+        # Estrae il nome/numero dalla colonna From (formato: "59004 Cassa 04 (59004)")
+        df['User'] = df['From'].str.extract(r'(.*?)\s*\(.*?\)')[0].fillna(df['From'])
+        df['User_Number'] = df['From'].str.extract(r'\((.*?)\)')[0].fillna("Unknown")
     except:
-        df['User'] = df['Caller ID'].fillna("Unknown")
+        df['User'] = df['From'].fillna("Unknown")
+        df['User_Number'] = "Unknown"
+
+    # Crea campo destination dalla colonna To
+    try:
+        df['Destination'] = df['To'].str.extract(r'(.*?)\s*\(.*?\)')[0].fillna(df['To'])
+        df['Destination_Number'] = df['To'].str.extract(r'\((.*?)\)')[0].fillna("Unknown")
+    except:
+        df['Destination'] = df['To'].fillna("Unknown")
+        df['Destination_Number'] = "Unknown"
 
     df['Status_clean'] = df['Status'].str.lower()
     
-    # Gestione più robusta del campo Reason
-    try:
-        df['Is_Transferred'] = df['Reason'].str.lower().str.contains("transferred|forwarded", na=False)
-    except:
+    # Gestione del campo Direction per identificare trasferimenti
+    df['Is_Internal'] = df['Direction'].str.lower() == 'internal'
+    df['Is_Inbound'] = df['Direction'].str.lower() == 'inbound' 
+    df['Is_Outbound'] = df['Direction'].str.lower() == 'outbound'
+    
+    # Considera come trasferiti quelli con activity details che contengono "transfer" o "forward"
+    if 'Call Activity Details' in df.columns:
+        df['Is_Transferred'] = df['Call Activity Details'].str.lower().str.contains("transfer|forward", na=False)
+    else:
         df['Is_Transferred'] = False
 
     return df
@@ -134,21 +149,30 @@ if uploaded_file:
         df = load_and_process_data(uploaded_file)
         
         st.subheader("📈 Statistiche Generali")
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4, col5 = st.columns(5)
         
         total_calls = len(df)
         answered_calls = (df['Status_clean'] == 'answered').sum()
         missed_calls = (df['Status_clean'] == 'missed').sum()
+        internal_calls = df['Is_Internal'].sum()
         transferred_calls = df['Is_Transferred'].sum()
         
         col1.metric("Totale Chiamate", total_calls)
         col2.metric("Chiamate Risposte", answered_calls)
         col3.metric("Chiamate Perse", missed_calls)
-        col4.metric("Chiamate Trasferite", transferred_calls)
+        col4.metric("Chiamate Interne", internal_calls)
+        col5.metric("Chiamate Trasferite", transferred_calls)
 
-        st.subheader("📊 Analisi per Utente")
+        # Statistiche aggiuntive
+        st.subheader("📊 Analisi per Direzione")
+        direction_counts = df['Direction'].value_counts()
+        fig_direction = px.pie(values=direction_counts.values, names=direction_counts.index, 
+                              title="Distribuzione per tipo di chiamata")
+        st.plotly_chart(fig_direction, use_container_width=True)
+
+        st.subheader("👥 Analisi per Utente")
         unique_users = sorted(df['User'].unique())
-        selected_users = st.multiselect("Filtra per utente (Caller ID)", options=unique_users, default=None)
+        selected_users = st.multiselect("Filtra per utente (From)", options=unique_users, default=None)
         user_df = df[df['User'].isin(selected_users)] if selected_users else df
 
         st.subheader("🕐 Analisi per Fascia Oraria")
@@ -158,14 +182,18 @@ if uploaded_file:
         if filtered_df.empty:
             st.warning("⚠️ Nessuna chiamata trovata nella fascia oraria selezionata.")
         else:
+            # Metriche per i dati filtrati
+            st.write(f"**Chiamate nella selezione**: {len(filtered_df)}")
+            
             concurrency_df = calculate_concurrency(filtered_df)
             
             if not concurrency_df.empty:
                 peak = concurrency_df['Concurrent Calls'].max()
                 mean = concurrency_df['Concurrent Calls'].mean()
 
-                st.write(f"**Picco chiamate contemporanee**: {peak}")
-                st.write(f"**Media chiamate contemporanee**: {mean:.2f}")
+                col1, col2 = st.columns(2)
+                col1.metric("Picco chiamate contemporanee", peak)
+                col2.metric("Media chiamate contemporanee", f"{mean:.2f}")
 
                 fig = px.line(concurrency_df, x='Time', y='Concurrent Calls', 
                              title='Chiamate contemporanee nel tempo')
@@ -178,14 +206,33 @@ if uploaded_file:
                          title='Distribuzione chiamate per ora')
             st.plotly_chart(fig2, use_container_width=True)
 
+            # Analisi durata chiamate
+            st.subheader("⏱️ Analisi Durata Chiamate")
+            avg_talking = filtered_df['Talking_sec'].mean()
+            avg_ringing = filtered_df['Ringing_sec'].mean()
+            
+            col1, col2 = st.columns(2)
+            col1.metric("Durata media conversazione", f"{avg_talking:.0f} sec")
+            col2.metric("Tempo medio di risposta", f"{avg_ringing:.0f} sec")
+
+            # Top utenti per numero di chiamate
+            st.subheader("🏆 Top Utenti per Chiamate")
+            user_stats = filtered_df.groupby('User').agg({
+                'Call ID': 'count',
+                'Talking_sec': 'mean',
+                'Status_clean': lambda x: (x == 'answered').sum()
+            }).round(2)
+            user_stats.columns = ['Num_Chiamate', 'Durata_Media_Sec', 'Chiamate_Risposte']
+            user_stats = user_stats.sort_values('Num_Chiamate', ascending=False).head(10)
+            st.dataframe(user_stats)
+
             st.subheader("📋 Dati filtrati")
-            with st.expander("Mostra tabella"):
-                # Mostra solo le colonne che esistono
-                available_columns = ['Call Time', 'Caller ID', 'Destination', 'Status', 'Ringing', 'Talking']
-                if 'Reason' in df.columns:
-                    available_columns.append('Reason')
+            with st.expander("Mostra tabella dettagliata"):
+                # Mostra le colonne più rilevanti
+                display_columns = ['Call Time', 'From', 'To', 'Direction', 'Status', 'Ringing', 'Talking']
+                if 'Call Activity Details' in filtered_df.columns:
+                    display_columns.append('Call Activity Details')
                 
-                display_columns = [col for col in available_columns if col in filtered_df.columns]
                 st.dataframe(filtered_df[display_columns])
 
             st.subheader("⬇️ Esporta i dati")
@@ -193,21 +240,31 @@ if uploaded_file:
             st.download_button(
                 label="Scarica CSV filtrato",
                 data=csv_export,
-                file_name="dati_filtrati.csv",
+                file_name=f"3cx_analisi_filtrati_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                 mime="text/csv"
             )
             
     except Exception as e:
         st.error(f"❌ Errore durante l'elaborazione del file: {str(e)}")
+        st.write("**Dettagli errore per debug:**")
+        st.code(str(e))
         st.write("**Suggerimenti per risolvere il problema:**")
         st.write("1. Verifica che il file CSV sia correttamente formattato")
         st.write("2. Controlla che la colonna 'Call Time' contenga date valide")
         st.write("3. Assicurati che il file non sia danneggiato")
 
 else:
-    st.info("Carica un file CSV per iniziare l'analisi.")
-    st.write("**Formato CSV richiesto:**")
-    st.write("- Colonna 'Call Time': data e ora della chiamata")
-    st.write("- Colonna 'Caller ID': identificativo del chiamante")
-    st.write("- Colonna 'Status': stato della chiamata (answered, missed, etc.)")
-    st.write("- Colonne 'Ringing' e 'Talking': durata in formato HH:MM:SS")
+    st.info("📁 Carica un file CSV per iniziare l'analisi.")
+    st.write("**Formato CSV supportato (nuovo formato 3CX 2025):**")
+    st.write("- **Call Time**: data e ora della chiamata (formato ISO: 2025-07-25T11:41:48)")
+    st.write("- **From**: utente che effettua la chiamata")
+    st.write("- **To**: destinatario della chiamata") 
+    st.write("- **Direction**: direzione (Internal, Inbound, Outbound)")
+    st.write("- **Status**: stato della chiamata (Answered, Missed, etc.)")
+    st.write("- **Ringing** e **Talking**: durata in formato HH:MM:SS")
+    
+    st.write("**Nuove funzionalità:**")
+    st.write("✅ Supporto per il nuovo formato CSV di 3CX 2025")
+    st.write("✅ Analisi per direzione chiamata (Interna/In entrata/In uscita)")
+    st.write("✅ Statistiche utenti con durata media e chiamate risposte")
+    st.write("✅ Gestione automatica formato data ISO")
